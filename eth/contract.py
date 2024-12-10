@@ -1,33 +1,33 @@
 import os
 from copy import deepcopy
 from typing import *
-import eth
-from solcx import compile_standard, install_solc
-
-class Contract(eth.Module):
+from solcx import compile_standard, install_solc, compile_solc
+import commune as c
+class Contract(c.Module):
     base_dir = '/'.join(__file__.split('/')[:-2])
-    contracts_dir_path = os.path.join(base_dir, 'contracts')
-    interfaces_path = os.path.join(base_dir, 'interfaces')
-    def __init__(self):
-        super().__init__()
-        self.solc_version = "0.8.0"
-        install_solc(self.solc_version)
-
+    contracts_path = os.path.join(c.pwd(), 'contracts')
+    def __init__(self,  solc_version: str = '0.8.0'):
+        self.solc_version = solc_version
     def compile(self, contract_path):
         with open(contract_path, 'r') as file:
             contract_source = file.read()
 
-        compiled_sol = compile_standard({
-            "language": "Solidity",
-            "sources": {contract_path: {"content": contract_source}},
-            "settings": {
-                "outputSelection": {
-                    "*": {
-                        "*": ["abi", "metadata", "evm.bytecode", "evm.sourceMap"]
+        filename = contract_path.split('/')[-1]
+        # Compile the contract
+        compiled_sol = compile_standard(
+            {
+                "language": "Solidity",
+                "sources": {filename: {"content": contract_source}},
+                "settings": {
+                    "outputSelection": {
+                        "*": {
+                            "*": ["abi", "metadata", "evm.bytecode", "evm.sourceMap"]
+                        }
                     }
-                }
-            }
-        }, solc_version=self.solc_version)
+                },
+            },
+            solc_version="0.8.0",
+        )
 
         return compiled_sol
 
@@ -36,7 +36,7 @@ class Contract(eth.Module):
         return [f.replace('.sol', '') for f in os.listdir(self.interfaces_path) if f.endswith('.sol')]
 
     def contract_paths(self):
-        return [os.path.join(root, f) for root, _, files in os.walk(self.contracts_dir_path) for f in files if f.endswith('.sol')]
+        return [os.path.join(root, f) for root, _, files in os.walk(self.contracts_path) for f in files if f.endswith('.sol')]
 
     def contracts(self):
         return [os.path.basename(path).replace('.sol', '') for path in self.contract_paths()]
@@ -77,7 +77,6 @@ class Contract(eth.Module):
     def deploy_contract(self, contract, args, network=None, key=None, **kwargs):
         client = self.get_client(network)
         key = self.resolve_key(key)
-
         gas_price = self.gas_price()
         nonce = self.get_transaction_count(key)
 
@@ -95,3 +94,8 @@ class Contract(eth.Module):
         tx_hash = self.client.eth.send_raw_transaction(signed_tx)
         tx_receipt = self.client.eth.wait_for_transaction_receipt(tx_hash)
         return tx_receipt
+    
+    @property
+    def interfaces(self):
+        interfaces = list(filter(lambda f: f.startswith('interfaces'), self.artifacts()))
+        return list(map(lambda f:os.path.dirname(f.replace('interfaces/', '')), interfaces))

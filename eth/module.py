@@ -8,20 +8,23 @@ class eth(c.Module):
 
     def __init__(self, 
                  network: str = 'local', 
-                 key : str = 'base'
+                 key : str = 'test'
                  ):
                  
         self.set_network(network)
         self.set_key(key)
 
-    def compile(self):
+    def compile(self, contract_path):
         # compile smart contracts in compile
-        return c.cmd('npx hardhat compile')
+        return c.cmd('npx hardhat compile' + contract_path)
     
     @classmethod
-    def get_key(cls, key:str):
+    def key(cls, key:str):
         return Key.get_key(key)
     
+    def key_exists(self, name:str):
+        return Key.key_exists(name)
+
     @classmethod
     def add_key(cls,name, key=None):
         return Key.add_key(name, key)
@@ -29,11 +32,6 @@ class eth(c.Module):
     @classmethod
     def keys(cls):
         return Key.keys()
-
-    @property
-    def interfaces(self):
-        interfaces = list(filter(lambda f: f.startswith('interfaces'), self.artifacts()))
-        return list(map(lambda f:os.path.dirname(f.replace('interfaces/', '')), interfaces))
 
     def resolve_key(self, key):
         if isinstance(key, str):
@@ -60,15 +58,22 @@ class eth(c.Module):
 
     @property
     def network_state(self):
-        return c.load_yaml(self.dirpath() + '/networks.yaml')
+        return c.get_yaml(self.dirpath() + '/networks.yaml')
 
     @property
     def networks(self):
         return list(self.network_state.keys())
 
-    @property
-    def available_networks(self):
-        return self.get_available_networks()
+
+    def key2balance(self):
+        key2balance = {}
+        for key in self.keys():
+            try:
+                balance = self.get_balance(key)
+                key2balance[key] = balance
+            except Exception as e:
+                print(f"Error getting balance for {key}: {e}")
+        return key2balance
 
     def get_urls(self, network:str ) -> List[str]:
         urls = self.network_state[network]['url']
@@ -139,18 +144,25 @@ class eth(c.Module):
         signed_tx = self.client.eth.sign_transaction(tx, key.private_key)
         return signed_tx.rawTransaction
 
-    def get_balance(self,address:str=None, token:str=None, ):
+    def balance(self,address:str=None, token:str=None):
         address = self.resolve_address(address)
         balance = self.client.eth.get_balance(address)
+        # if erc20 token is provided, get balance of that token
+        if token:
+            balance = self.client.eth.get_token_balance(address = address, token = token)
+        balance = balance / 10**18
         return balance
-    def ganache(self, port:int=8545, balance=100, remote=1):
+    
 
-
+    def ganache(self, 
+                port:int=8545, 
+                balance=100, 
+                remote=0):
         if remote:
+            kwargs ={'port':port, 'balance':balance, 'remote':False}
             return self.remote_fn('ganache', 
                                   name = 'ganache',
-                                  kwargs={'port':port, 'balance':balance, 'remote':False})
-
+                                  kwargs=kwargs)
         import os
         import subprocess
         from .key import Key
@@ -167,18 +179,12 @@ class eth(c.Module):
             os.system("npm install -g ganache-cli")
         
         # Get all keys from storage
-        keys = Key.keys()
         
         # Prepare account strings for Ganache
-        account_strings = []
-        for key_name in keys:
-            key = Key.get_key(key_name)
-            private_key_str = key.private_key_string
-            balance_wei = str(int(balance) * 10**18)
-            account_strings.append(f'"{private_key_str},{balance_wei}"')
-        
+        key2privatekey = Key().key2privatekey()
+        balance = balance * 10**18
         # Join account strings
-        accounts_param = ' '.join([f'--account={acc}' for acc in account_strings])
+        accounts_param = ' '.join([f'--account=0x{acc},{balance}' for acc in key2privatekey.values()])
         
         # Start Ganache CLI with all accounts funded
         cmd = f'ganache-cli -p {port} {accounts_param}'
@@ -191,7 +197,10 @@ class eth(c.Module):
         modules = c.get_tree(dirpath)
         return modules
     
-    def get_module(self, module:str):
-        return c.get_module('eth.'+module)
+    def module(self, module:str):
+        return c.module('eth.'+module)
+    
+    def modules(self):
+        return list(c.get_tree(self.dirpath()).keys())
 
 Module = eth

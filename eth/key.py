@@ -11,9 +11,22 @@ from eth_utils.curried import combomethod,keccak,text_if_str,to_bytes
 from eth_keys import keys
 import commune as c # import commune
 
-class Key(Account, c.Module):
-    key_storage_path = '~/.eth/key'
-    def __init__(self, private_key: str = None) -> None:
+
+class Key(Account):
+    crypto_type = 'eth'
+    key_storage_path = os.path.expanduser('~/.eth/key')
+
+    def __init__(self, private_key: str = None, name=None) -> None:
+        self.set_private_key(private_key)
+        self.name = name
+
+    def set_key(self, key):
+        key = self.get_key(key)            
+        self.set_private_key(key.private_key)
+        return key
+
+    def set_private_key(self, private_key=None):
+        private_key = private_key or self.create_private_key()
         if self.key_exists(private_key):
             self.load_key(private_key)
         else:
@@ -23,10 +36,7 @@ class Key(Account, c.Module):
         message = c.python2str(message)
         if isinstance(message, str):
             message = encode_defunct(text=message)
-        elif isinstance(message, SignableMessage):
-            message = message
-        else:
-            raise NotImplemented
+        assert isinstance(message, SignableMessage)
         return message
     
     def is_valid_private_key(self, private_key):
@@ -38,11 +48,8 @@ class Key(Account, c.Module):
     
     @property
     def private_key_string(self) -> str:
-        private_key = self._private_key
-        if isinstance(private_key, bytes):
-            private_key = private_key.hex()
-        if not private_key.startswith('0x'):
-            private_key = '0x' + private_key
+        private_key = self._private_key.hex() 
+        private_key = '0x' + private_key if not private_key.startswith('0x') else private_key
         return private_key
 
     @property
@@ -57,8 +64,17 @@ class Key(Account, c.Module):
             private_key = bytes.fromhex(private_key)
         self._private_key = private_key
         return private_key
+    
+    def resolve_key(self, key):
+        if isinstance(key, str):
+            key = self.get_key(key)
+        else:
+            key = key or self
+        assert isinstance(key, Key), f'Invalid key {key}'
+        return key
                     
-    def sign(self, message: Union[SignableMessage,str, dict]) -> Dict:
+    def sign(self, message: Union[SignableMessage,str, dict], key=None) -> Dict:
+        key = self.resolve_key(key)
         signable_message = self.resolve_message(message)
         signed_msg =  Account.sign_message(signable_message, self.private_key)
         return {
@@ -104,48 +120,39 @@ class Key(Account, c.Module):
         private_key_object = keys.PrivateKey(private_key)
         return private_key_object.public_key
 
-    
-    def verify(self, message:Any, 
-               signature:str = None, 
-               vrs:Union[tuple, list]=None, 
-               address:str=None) -> bool:
+    def verify(self, message:Any, signature:str, vrs:Union[tuple, list], address:str) -> bool:
         '''
         verify message from the signature or vrs based on the address
         '''
         recovered_address = Account.recover_message(message, vrs=vrs, signature=signature)
         return bool(recovered_address == address)
     
-
-       
     @classmethod
-    def from_password(cls, password:str, salt:str='commune', prompt=False):
-        
-        from web3.auto import w3
+    def password2private_key(cls, password, salt = 'eth'):
         from Crypto.Protocol.KDF import PBKDF2
-        # Prompt the user for a password and salt
-        if prompt :
-            password = input("Enter password: ")
-        # Derive a key using PBKDF2
-        key = PBKDF2(password.encode(), salt, dkLen=32, count=100000)
-        # Create an account using the key
-        account = cls.from_key(key)
-        return account
+        return  PBKDF2(password.encode(), salt, dkLen=32, count=100000).hex()
+    
+    @classmethod
+    def from_password(cls, password:str, salt = 'eth'):
+        return cls.from_key(cls.password2private_key(password, salt))
 
-    @combomethod
-    def create(self, extra_entropy=""):
+    @classmethod
+    def create(cls, extra_entropy=""):
         r"""
         Creates a new private key, and returns it as a
         :class:`~eth_account.local.Key`.
-
-        :param extra_entropy: Add extra randomness to whatever randomness your OS
-          can provide
         :type extra_entropy: str or bytes or int
-        :returns: an object with private key and convenience methods
-
         """
         extra_key_bytes = text_if_str(to_bytes, extra_entropy)
         key_bytes = keccak(os.urandom(32) + extra_key_bytes)
-        return self.from_key(key_bytes)
+        return cls.from_key(key_bytes)
+
+
+    @classmethod
+    def new(cls, extra_entropy=""):
+        extra_key_bytes = text_if_str(to_bytes, extra_entropy)
+        key_bytes = keccak(os.urandom(32) + extra_key_bytes)
+        return cls.from_key(key_bytes)
 
     @classmethod
     def create_private_key(cls, extra_entropy="", return_str=False):
@@ -193,19 +200,17 @@ class Key(Account, c.Module):
 
 
     def __str__(self):
-        return f'Key(address={self.address})'
+        return f'Key(address={self.address} name={self.name}, crypto_type={self.crypto_type})'
     
 
     def __repr__(self):
         return self.__str__()
     
-
     def resolve_encryption_password(self, password:str=None):
         password = password or self.private_key_string
         if isinstance(password, str):
             password = password.encode()
-        password = hashlib.sha256(password).digest()
-        return password
+        return hashlib.sha256(password).digest()
     
     def resolve_encryption_data(self, data):
         if not isinstance(data, str):
@@ -231,11 +236,8 @@ class Key(Account, c.Module):
         data = data[:-ord(data[len(data)-1:])].decode('utf-8')
         return data
     
-    @classmethod
-    def from_key(cls, private_key:str):
-        key = Key(private_key)
-        print(key.address)
-        return key
+
+
 
     
     def save_key(self, name, private_key=None):
@@ -251,30 +253,57 @@ class Key(Account, c.Module):
             'address': self.address,
             'private_key': self.private_key_string
         }
+    
+    
+    @classmethod
+    def from_key(cls, private_key:str):
+        key = Key(private_key)
+        print(key.address)
+        return key
+    
     @classmethod
     def from_dict(cls, data):
-        print(data['private_key'])
         key = Key.from_key(data['private_key'])
         assert key.address == data['address'], f'{key.address} != {data["address"]}'
         self = key
         return self
-
+    
     @classmethod
     def get_key_path(cls, name):
         path =  f'{cls.key_storage_path}/{name}.json'
         return c.resolve_path(path)
     
+    def get_keys(self, password=None):
+        key2encrypted = self.key2encrypted()
+        key2address = {}
+        for k, enc in key2encrypted.items():
+            if enc :
+                try:
+                    key2address[k] = self.get_key(k, password)
+                except :
+                    pass
+        return key2address
+
+    def key_info(self, name):
+        path = self.get_key_path(name)
+        return  c.get_json(path)
+    
     @classmethod
-    def get_key(cls, name, create_if_not_found=True):
+    def get_key(cls, name, password=None, create_if_not_found=True):
         path = cls.get_key_path(name)
         if not os.path.exists(path):
             if create_if_not_found:
                 cls.add_key(name)
             else:
                 raise Exception(f'Key {name} not found')
-        return cls.from_dict(c.get_json(path))
-    
-    
+        data = c.get_json(path)
+        if password != None:
+            # assert data['encrypted']
+            data['private_key'] = c.decrypt(data['private_key'], password=password)
+            
+        key =  cls.from_dict(data)
+        key.name = name
+        return key
     @classmethod
     def add_key(self, name, key=None, refresh=False):
         data = Key(key).to_dict()
@@ -283,30 +312,30 @@ class Key(Account, c.Module):
             raise Exception(f'Key {name} already exists')
         c.put_json(path, data)
         return {'status': 'success', 'message': f'Key {name} added'}
-    
     @classmethod
     def key_exists(self, name):
         path = self.get_key_path(name)
-        print(path)
         return os.path.exists(path)
     
     def load_key(self, name):
         path = self.get_key_path(name)
-        data = c.load_json(path)
+        data = c.get_json(path)
         self.private_key = data['private_key']
         return {'status': 'success', 'message': f'Key {name} loaded', 'address': self.address}
     
     @classmethod
     def key2path(cls):
         cls.key_storage_path = c.resolve_path(cls.key_storage_path)
-
         paths = c.ls(cls.key_storage_path)
         key2path = {path.split('/')[-1].split('.')[0]: path for path in paths}
         return key2path
     
     @classmethod
-    def keys(cls, search=None):
+    def keys(cls, search=None, show_encrypted=False):
         keys = list(cls.key2path().keys())
+        key2encrypted = cls.key2encrypted()
+        if not show_encrypted:
+            keys = [key  for key in keys if not key2encrypted[key]]
         if search:
             keys = list(filter(lambda k: search in k, keys))
         return keys
@@ -314,3 +343,48 @@ class Key(Account, c.Module):
     @classmethod
     def remove_key(cls, name):
         return os.remove(cls.get_key_path(name))
+    
+    @classmethod
+    def is_encrypted(cls, key):
+        if isinstance(key, str):
+            key2path = cls.key2path()
+            if key not in key2path:
+                return False
+            path = key2path[key]
+            if not os.path.exists(path) :
+                return False
+            data = c.get_json(path)
+        return bool(isinstance(data, dict) and data.get('encrypted', False))
+    
+    @classmethod
+    def key2encrypted(cls ):
+        key2path = cls.key2path()
+        key2path = {key: cls.is_encrypted(key) for key, path in key2path.items() }
+        return key2path
+    
+    @classmethod
+    def encrypted_keys(cls):
+        return [key for key, encrypted in cls.key2encrypted().items() if encrypted]
+
+    def encrypt_key(self, name, password=None):
+        assert self.key_exists(name), f'Key {name} not found'
+        assert not self.is_encrypted(name), f'Key {name} is already encrypted'
+        path = self.get_key_path(name)
+        data = c.get_json(path)
+        data['private_key'] = self.encrypt(data['private_key'], password)
+        data['encrypted'] = True
+        c.put_json(path, data)
+        return {'status': 'success', 'message': f'Key {name} encrypted'}
+    
+    def decrypt_key(self, name, password=None):
+        path = self.get_key_path(name)
+        import json
+        data = json.loads(c.get_text(path))
+        if 'private_key' in data:
+            data['private_key'] = self.decrypt(data['private_key'], password=password)
+        else:
+            data = self.decrypt(data, password=password)
+        data['encrypted'] = False
+        c.put_json(path, data)
+        return {'status': 'success', 'message': f'Key {name} decrypted'}
+                
