@@ -235,9 +235,6 @@ class Key(Account):
         data =  cipher.decrypt(data[AES.block_size:])
         data = data[:-ord(data[len(data)-1:])].decode('utf-8')
         return data
-    
-
-
 
     
     def save_key(self, name, private_key=None):
@@ -329,7 +326,7 @@ class Key(Account):
         paths = c.ls(cls.key_storage_path)
         key2path = {path.split('/')[-1].split('.')[0]: path for path in paths}
         return key2path
-    
+
     @classmethod
     def keys(cls, search=None, show_encrypted=False):
         keys = list(cls.key2path().keys())
@@ -376,7 +373,7 @@ class Key(Account):
         c.put_json(path, data)
         return {'status': 'success', 'message': f'Key {name} encrypted'}
     
-    def decrypt_key(self, name, password=None):
+    def decrypt_key(self, name, password=None, save=True):
         path = self.get_key_path(name)
         import json
         data = json.loads(c.get_text(path))
@@ -385,6 +382,25 @@ class Key(Account):
         else:
             data = self.decrypt(data, password=password)
         data['encrypted'] = False
-        c.put_json(path, data)
+        if save:
+            c.put_json(path, data)
         return {'status': 'success', 'message': f'Key {name} decrypted'}
                 
+    def key2data(self, password=None):
+        key2data = {}
+        for key, path in self.key2path().items():
+            data = c.get_json(path)
+            if data == None:
+                continue
+            if password != None and data.get('encrypted', False) == True:
+                try:
+                    data = self.decrypt(data['private_key'], password=password)
+                    assert Key(data['private_key']).address == data['address']
+                except Exception as e:
+                    data = None
+                    print(e)
+                    pass
+            if data != None:
+                key2data[key] = data
+        return key2data
+    
