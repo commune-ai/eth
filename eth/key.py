@@ -11,7 +11,6 @@ from eth_utils.curried import combomethod,keccak,text_if_str,to_bytes
 from eth_keys import keys
 import commune as c # import commune
 
-
 class Key(Account):
     crypto_type = 'eth'
     key_storage_path = os.path.expanduser('~/.eth/key')
@@ -394,7 +393,7 @@ class Key(Account):
                 continue
             if password != None and data.get('encrypted', False) == True:
                 try:
-                    data = self.decrypt(data['private_key'], password=password)
+                    data['private_key'] = self.decrypt(data['private_key'], password=password)
                     assert Key(data['private_key']).address == data['address']
                 except Exception as e:
                     data = None
